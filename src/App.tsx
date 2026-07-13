@@ -94,22 +94,37 @@ export default function App() {
     const isArrow = ['up','down','left','right'].includes(key.name)
     const isRelease = key.eventType === 'release'
 
-    // Cursor visible only while Ctrl is actively held
-    if (key.ctrl) setState('keyCursor', true)
-    if (isRelease && !key.ctrl) setState('keyCursor', false)
-
-    if (key.ctrl && isArrow) {
+    // Ctrl+arrow → move cursor, show preview
+    if (key.ctrl && isArrow && !isRelease) {
       const p = { x: state.cursorX, y: state.cursorY }
       if (key.name === 'up') p.y = Math.max(0, p.y - 1)
       else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
       else if (key.name === 'left') p.x = Math.max(0, p.x - 1)
       else if (key.name === 'right') p.x = Math.min(renderer.terminalWidth - 1, p.x + 1)
       setState({ cursorX: p.x, cursorY: p.y })
+      setState('keyCursor', true)
+      return
+    }
+    // Any non-Ctrl keypress → hide cursor
+    if (!key.ctrl && !isRelease && !(key.name === 'space' && isRelease)) {
+      setState('keyCursor', false)
+    }
+
+    // Space down → start painting; Space up → stop
+    if (key.name === 'space') {
+      if (!isRelease) { setState('kbdPressed', true); setState('keyCursor', true) }
+      else { setState('kbdPressed', false) }
       return
     }
 
-    // Space → click at cursor
-    if (key.name === 'space' && state.keyCursor && !isRelease) {
+    // Arrow while painting → move + click
+    if (state.kbdPressed && isArrow && !isRelease) {
+      const p = { x: state.cursorX, y: state.cursorY }
+      if (key.name === 'up') p.y = Math.max(0, p.y - 1)
+      else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
+      else if (key.name === 'left') p.x = Math.max(0, p.x - 1)
+      else if (key.name === 'right') p.x = Math.min(renderer.terminalWidth - 1, p.x + 1)
+      setState({ cursorX: p.x, cursorY: p.y })
       handleCursorClick(state.cursorX, state.cursorY)
       return
     }
@@ -126,7 +141,7 @@ export default function App() {
       <Show when={action()}>
         <Dialog action={action()!} onClose={() => setAction(null)} />
       </Show>
-      <Show when={state.keyCursor}>
+      <Show when={state.keyCursor || state.kbdPressed}>
         <box position="absolute" left={0} top={0} width={renderer.terminalWidth} height={renderer.terminalHeight} zIndex={99999}>
           <box position="absolute" left={state.cursorX} top={state.cursorY} width={1} height={1}>
             <text fg="#ffffff" bg="#1f6feb"> </text>
