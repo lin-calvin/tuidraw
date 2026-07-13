@@ -92,9 +92,8 @@ export default function App() {
 
   useKeyboard((key) => {
     const isArrow = ['up','down','left','right'].includes(key.name)
-    if (!isArrow || key.eventType === 'release') return
+    if (!isArrow) return
 
-    // Move cursor
     const p = { x: state.cursorX, y: state.cursorY }
     if (key.name === 'up') p.y = Math.max(0, p.y - 1)
     else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
@@ -103,8 +102,8 @@ export default function App() {
     setState({ cursorX: p.x, cursorY: p.y })
     setState('keyCursor', true)
 
-    // Alt+arrow → also click (paint mode)
-    if (key.alt) handleCursorClick(state.cursorX, state.cursorY)
+    // Alt / Option + arrow → move + click (paint mode)
+    if (key.meta || key.option) handleCursorClick(state.cursorX, state.cursorY)
   })
 
   return (
