@@ -18,6 +18,10 @@ export const [state, setState] = createStore({
   toolState: { active: false } as ToolState,
   gridVisible: true,
   mousePos: { x: 0, y: 0 } as Vec2,
+  keyCursor: false,
+  cursorBlink: false,
+  cursorX: 10,
+  cursorY: 10,
 })
 
 export function setRenderCallback(cb: () => void) {

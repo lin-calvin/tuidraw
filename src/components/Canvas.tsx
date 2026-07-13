@@ -293,23 +293,23 @@ export default function Canvas() {
 
   useKeyboard((key) => {
     const fb = fbCache
-    if (!fb || !fb.textPos) return
-    if (key.name === 'return') {
-      if (fb.textBuf) {
-        addObject(newText(fb.textPos, fb.textBuf, state.currentFg, state.currentBg))
-        requestRender()
+
+    // Text mode: route to text buffer
+    if (fb && fb.textPos) {
+      if (key.name === 'return') {
+        if (fb.textBuf) {
+          addObject(newText(fb.textPos, fb.textBuf, state.currentFg, state.currentBg))
+          requestRender()
+        }
+        fb.textBuf = ''; fb.textPos = null
+      } else if (key.name === 'escape') {
+        fb.textBuf = ''; fb.textPos = null
+      } else if (key.name === 'backspace') {
+        fb.textBuf = fb.textBuf.slice(0, -1)
+      } else if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
+        fb.textBuf += key.sequence
       }
-      fb.textBuf = ''; fb.textPos = null
-    } else if (key.name === 'escape') {
-      fb.textBuf = ''; fb.textPos = null
-    } else if (key.name === 'backspace') {
-      fb.textBuf = fb.textBuf.slice(0, -1)
-    } else if (key.sequence && key.sequence.length === 1 && !key.ctrl && !key.meta) {
-      fb.textBuf += key.sequence
-    }
-    if (fb.textPos) {
-      // Show text preview
-      requestRender()
+      if (fb.textPos) requestRender()
     }
   })
 
@@ -349,6 +349,7 @@ export default function Canvas() {
       const obj = state.objects.find(o => o.id === state.selectedId)
       if (obj) drawSelection(buf, obj)
     }
+
     fb.requestRender()
   }
 
@@ -409,6 +410,60 @@ export default function Canvas() {
   }
 
   let renderTimer: ReturnType<typeof setInterval> | null = null
+  let blinkTimer: ReturnType<typeof setInterval> | null = null
+
+  function simulateClick(x: number, y: number) {
+    const fb = fbCache
+    if (!fb) return
+    const tool = state.currentTool
+    if (tool === 'select') {
+      const hit = hitTest(x, y, state.objects)
+      if (hit) { setState('selectedId', hit.id); moveObject(hit.id, hit.pos) } else setState('selectedId', null)
+      return
+    }
+    if (tool === 'eraser') {
+      const hit = hitTest(x, y, state.objects)
+      if (hit) {
+        const idx = state.objects.findIndex(o => o.id === hit.id)
+        if (idx >= 0) { setState('objects', state.objects.toSpliced(idx, 1)); setState('selectedId', null); requestRender() }
+      }
+      return
+    }
+    if (tool === 'eyedropper') {
+      const p = pickColorAt(CV.cells, x, y, state.objects, CV.w, CV.h)
+      if (p) { setState('currentFg', p.fg); setState('currentBg', p.bg) }
+      return
+    }
+    if (tool === 'fill') {
+      const r = performFill(state.objects, CV.cells, x, y, CV.w, CV.h, '*', state.currentFg, state.currentBg)
+      if (r) addObject(r)
+      return
+    }
+    if (tool === 'text') {
+      fb.textPos = { x, y }; fb.textBuf = ''
+      return
+    }
+    if (tool === 'line' || tool === 'rect') {
+      if (fb.isDrawing && fb.drawStart) {
+        if (tool === 'line') addObject(newLine(fb.drawStart, { x, y }, state.currentFg))
+        else {
+          const w = Math.abs(x - fb.drawStart.x) + 1
+          const h = Math.abs(y - fb.drawStart.y) + 1
+          if (w >= 2 && h >= 2) addObject(newRect({ x: Math.min(fb.drawStart.x, x), y: Math.min(fb.drawStart.y, y) }, w, h, 'single'))
+        }
+        fb.isDrawing = false; fb.drawStart = null
+      } else {
+        fb.isDrawing = true; fb.drawStart = { x, y }
+      }
+      return
+    }
+    if (tool === 'pencil') {
+      CV.cells[y][x] = { char: '*', fg: state.currentFg, bg: state.currentBg }
+      const obj = newPencil({ x, y }, '*', state.currentFg, state.currentBg)
+      addObject(obj)
+      return
+    }
+  }
 
   onMount(() => {
     const root = renderer.root
@@ -421,12 +476,13 @@ export default function Canvas() {
     scroller.add(fb)
     setRenderCallback(() => renderCells())
     requestRender()
-    // Background render loop — keeps canvas in sync at ~100fps
     renderTimer = setInterval(() => { if (fbCache) renderCells() }, 10)
+    blinkTimer = setInterval(() => setState('cursorBlink', !state.cursorBlink), 500)
   })
 
   onCleanup(() => {
     if (renderTimer) clearInterval(renderTimer)
+    if (blinkTimer) clearInterval(blinkTimer)
     setRenderCallback(() => {})
     const fb = renderer.root.findDescendantById("canvas-fb")
     if (fb) fb.destroy()
