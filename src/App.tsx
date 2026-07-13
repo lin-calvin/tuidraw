@@ -92,7 +92,7 @@ export default function App() {
 
   useKeyboard((key) => {
     const isArrow = ['up','down','left','right'].includes(key.name)
-    if (!isArrow) return
+    if (!isArrow || (!key.ctrl && !key.meta && !key.option)) return
 
     const p = { x: state.cursorX, y: state.cursorY }
     if (key.name === 'up') p.y = Math.max(0, p.y - 1)
@@ -102,7 +102,7 @@ export default function App() {
     setState({ cursorX: p.x, cursorY: p.y })
     setState('keyCursor', true)
 
-    // Alt / Option + arrow → move + click (paint mode)
+    // Alt / Option + arrow → also click (paint mode)
     if (key.meta || key.option) handleCursorClick(state.cursorX, state.cursorY)
   })
 
