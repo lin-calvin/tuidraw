@@ -92,21 +92,9 @@ export default function App() {
 
   useKeyboard((key) => {
     const isArrow = ['up','down','left','right'].includes(key.name)
-    if (key.eventType === 'release' || !isArrow) return
+    if (!isArrow || key.eventType === 'release') return
 
-    // Ctrl+arrow → move cursor only (preview)
-    if (key.ctrl) {
-      const p = { x: state.cursorX, y: state.cursorY }
-      if (key.name === 'up') p.y = Math.max(0, p.y - 1)
-      else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
-      else if (key.name === 'left') p.x = Math.max(0, p.x - 1)
-      else if (key.name === 'right') p.x = Math.min(renderer.terminalWidth - 1, p.x + 1)
-      setState({ cursorX: p.x, cursorY: p.y })
-      setState('keyCursor', true)
-      return
-    }
-
-    // Plain arrow (or alt+arrow) → move + click
+    // Move cursor
     const p = { x: state.cursorX, y: state.cursorY }
     if (key.name === 'up') p.y = Math.max(0, p.y - 1)
     else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
@@ -114,7 +102,9 @@ export default function App() {
     else if (key.name === 'right') p.x = Math.min(renderer.terminalWidth - 1, p.x + 1)
     setState({ cursorX: p.x, cursorY: p.y })
     setState('keyCursor', true)
-    handleCursorClick(state.cursorX, state.cursorY)
+
+    // Alt+arrow → also click (paint mode)
+    if (key.alt) handleCursorClick(state.cursorX, state.cursorY)
   })
 
   return (
@@ -129,10 +119,8 @@ export default function App() {
         <Dialog action={action()!} onClose={() => setAction(null)} />
       </Show>
       <Show when={state.keyCursor}>
-        <box position="absolute" left={0} top={0} width={renderer.terminalWidth} height={renderer.terminalHeight} zIndex={99999}>
-          <box position="absolute" left={state.cursorX} top={state.cursorY} width={1} height={1}>
-            <text fg="#ffffff" bg="#1f6feb"> </text>
-          </box>
+        <box position="absolute" left={state.cursorX} top={state.cursorY} width={1} height={1} zIndex={99999}>
+          <text fg="#ffffff" bg="#1f6feb"> </text>
         </box>
       </Show>
     </box>
