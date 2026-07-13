@@ -1,5 +1,5 @@
-import { createSignal, Show, onMount, onCleanup } from "solid-js"
-import { Portal, useRenderer, useKeyboard } from "@opentui/solid"
+import { createSignal, Show } from "solid-js"
+import { useRenderer, useKeyboard } from "@opentui/solid"
 import Toolbar from "./components/Toolbar"
 import ToolSidebar from "./components/ToolSidebar"
 import ColorPalette from "./components/ColorPalette"
@@ -7,79 +7,117 @@ import Canvas from "./components/Canvas"
 import Dialog, { type DialogMode, type DialogAction } from "./components/Dialog"
 import { CV } from "./canvas_state"
 import { composite } from "./compositor"
-import { state, setState, clearCells } from "./store"
+import { state, setState, clearCells, requestRender, addObject, performUndo, performRedo } from "./store"
+import { hitTest } from "./hit_test"
+import { performFill, pickColorAt } from "./tools"
 
-function emitMouse(renderer: any, x: number, y: number, type: 'down' | 'up') {
-  const seq = `\x1b[<0;${x + 1};${y + 1}${type === 'down' ? 'M' : 'm'}`
-  renderer.stdin.emit('data', Buffer.from(seq))
-}
+const VISIBLE_TOOLS = ['select','pencil','line','rect','text','eraser','eyedropper'] as const
 
 export default function App() {
   const renderer = useRenderer()
   const [action, setAction] = createSignal<DialogAction | null>(null)
-  let blinkTimer: ReturnType<typeof setInterval> | null = null
 
-  onMount(() => {
-    blinkTimer = setInterval(() => setState('cursorBlink', !state.cursorBlink), 500)
-  })
-  onCleanup(() => { if (blinkTimer) clearInterval(blinkTimer) })
-
-  useKeyboard((key) => {
-    const isArrow = ['up','down','left','right'].includes(key.name)
-    if (key.ctrl && isArrow) {
-      setState('keyCursor', true)
-      const p = { x: state.cursorX, y: state.cursorY }
-      if (key.name === 'up') p.y = Math.max(0, p.y - 1)
-      else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
-      else if (key.name === 'left') p.x = Math.max(0, p.x - 1)
-      else if (key.name === 'right') p.x = Math.min(renderer.terminalWidth - 1, p.x + 1)
-      setState({ cursorX: p.x, cursorY: p.y } as any)
-      return
-    }
-    if (key.name === 'space' && state.keyCursor) {
-      emitMouse(renderer, state.cursorX, state.cursorY, 'down')
-      setTimeout(() => emitMouse(renderer, state.cursorX, state.cursorY, 'up'), 10)
-      return
-    }
-  })
-
-  function onToolbarAction(mode: DialogMode) {
+  function showDialog(mode: DialogMode) {
     const handlers: Record<DialogMode, (path: string) => void | Promise<void>> = {
-      save: async (path: string) => {
-        const data = { version: 1, canvasW: CV.w, canvasH: CV.h, objects: state.objects }
-        await Bun.write(path, JSON.stringify(data, null, 2))
+      save: async (p: string) => { await Bun.write(p, JSON.stringify({ version: 1, canvasW: CV.w, canvasH: CV.h, objects: state.objects }, null, 2)) },
+      open: async (p: string) => { const d = JSON.parse(await Bun.file(p).text()); if (d?.objects) { setState('objects', d.objects); setState('selectedId', null) } },
+      import: async (p: string) => {
+        const rows = (await Bun.file(p).text()).split('\n').filter((l: string) => l.length > 0).map((r: string) => r.replace(/\r$/, ''))
+        setState('objects', [...state.objects, { id: 'img_' + Date.now(), type: 'image' as const, pos: { x: 0, y: 0 }, fg: '#ffffff', bg: '#000000', data: { rows } }])
       },
-      open: async (path: string) => {
-        const text = await Bun.file(path).text()
-        const data = JSON.parse(text)
-        if (data?.objects) { setState('objects', data.objects); setState('selectedId', null) }
-      },
-      import: async (path: string) => {
-        const text = await Bun.file(path).text()
-        const rows = text.split('\n').filter((l: string) => l.length > 0).map((r: string) => r.replace(/\r$/, ''))
-        setState('objects', [...state.objects, {
-          id: 'img_' + Date.now(), type: 'image' as const,
-          pos: { x: 0, y: 0 }, fg: '#ffffff', bg: '#000000', data: { rows },
-        }])
-      },
-      export: async (path: string) => {
-        clearCells()
-        composite(state.objects, CV.cells, CV.w, CV.h)
+      export: async (p: string) => {
+        clearCells(); composite(state.objects, CV.cells, CV.w, CV.h)
         const lines: string[] = []
-        for (let y = 0; y < CV.h; y++) {
-          let row = ''
-          for (let x = 0; x < CV.w; x++) row += CV.cells[y][x].char
-          lines.push(row.replace(/\s+$/, ''))
-        }
-        await Bun.write(path, lines.join('\n'))
+        for (let y = 0; y < CV.h; y++) { let r = ''; for (let x = 0; x < CV.w; x++) r += CV.cells[y][x].char; lines.push(r.replace(/\s+$/, '')) }
+        await Bun.write(p, lines.join('\n'))
       },
     }
     setAction({ mode, run: handlers[mode] })
   }
 
+  function handleCursorClick(cx: number, cy: number) {
+    const tw = renderer.terminalWidth, th = renderer.terminalHeight
+    if (cx < 0 || cx >= tw || cy < 0 || cy >= th) return
+
+    // Toolbar row
+    if (cy === 0) {
+      const btn: Record<number, () => void> = {
+        12: () => showDialog('save'), 17: () => showDialog('open'), 23: () => showDialog('save'),
+        29: () => showDialog('import'), 37: () => showDialog('export'),
+        67: () => performUndo(), 70: () => performRedo(), 75: () => renderer.destroy(),
+      }
+      for (const [x, fn] of Object.entries(btn)) {
+        if (cx >= parseInt(x) - 3 && cx <= parseInt(x) + 3) { fn(); return }
+      }
+      return
+    }
+
+    // Sidebar
+    if (cx < 9) {
+      const idx = cy - 1
+      if (idx >= 0 && idx < VISIBLE_TOOLS.length) { setState('currentTool', VISIBLE_TOOLS[idx]); return }
+      return
+    }
+
+    // Canvas
+    const rx = cx - 9, ry = cy - 1
+    if (rx < 0 || ry < 0 || rx >= CV.w || ry >= CV.h) return
+
+    const tool = state.currentTool
+    if (tool === 'fill') {
+      const r = performFill(state.objects, CV.cells, rx, ry, CV.w, CV.h, '*', state.currentFg, state.currentBg)
+      if (r) addObject(r); return
+    }
+    if (tool === 'eyedropper') {
+      const p = pickColorAt(CV.cells, rx, ry, state.objects, CV.w, CV.h)
+      if (p) { setState('currentFg', p.fg); setState('currentBg', p.bg) }; return
+    }
+    if (tool === 'eraser') {
+      const h = hitTest(rx, ry, state.objects)
+      if (h) {
+        const idx = state.objects.findIndex(o => o.id === h.id)
+        if (idx >= 0) { setState('objects', state.objects.toSpliced(idx, 1)); setState('selectedId', null); requestRender() }
+      }; return
+    }
+    if (tool === 'select') {
+      const h = hitTest(rx, ry, state.objects)
+      setState('selectedId', h ? h.id : null)
+      requestRender(); return
+    }
+    if (tool === 'pencil') {
+      CV.cells[ry][rx] = { char: '*', fg: state.currentFg, bg: state.currentBg }
+      return
+    }
+  }
+
+  useKeyboard((key) => {
+    const isArrow = ['up','down','left','right'].includes(key.name)
+    const isRelease = key.eventType === 'release'
+
+    // Cursor visible only while Ctrl is actively held
+    if (key.ctrl) setState('keyCursor', true)
+    if (isRelease && !key.ctrl) setState('keyCursor', false)
+
+    if (key.ctrl && isArrow) {
+      const p = { x: state.cursorX, y: state.cursorY }
+      if (key.name === 'up') p.y = Math.max(0, p.y - 1)
+      else if (key.name === 'down') p.y = Math.min(renderer.terminalHeight - 1, p.y + 1)
+      else if (key.name === 'left') p.x = Math.max(0, p.x - 1)
+      else if (key.name === 'right') p.x = Math.min(renderer.terminalWidth - 1, p.x + 1)
+      setState({ cursorX: p.x, cursorY: p.y })
+      return
+    }
+
+    // Space → click at cursor
+    if (key.name === 'space' && state.keyCursor && !isRelease) {
+      handleCursorClick(state.cursorX, state.cursorY)
+      return
+    }
+  }, { release: true })
+
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor="#0d1117">
-      <Toolbar onDialog={onToolbarAction} />
+      <Toolbar onDialog={showDialog} />
       <box flexDirection="row" flexGrow={1} width="100%">
         <ToolSidebar />
         <Canvas />
@@ -88,12 +126,12 @@ export default function App() {
       <Show when={action()}>
         <Dialog action={action()!} onClose={() => setAction(null)} />
       </Show>
-      <Show when={state.keyCursor && state.cursorBlink}>
-        <Portal mount={renderer.root}>
-          <box position="absolute" left={state.cursorX} top={state.cursorY} width={1} height={1} zIndex={99999}>
+      <Show when={state.keyCursor}>
+        <box position="absolute" left={0} top={0} width={renderer.terminalWidth} height={renderer.terminalHeight} zIndex={99999}>
+          <box position="absolute" left={state.cursorX} top={state.cursorY} width={1} height={1}>
             <text fg="#ffffff" bg="#1f6feb"> </text>
           </box>
-        </Portal>
+        </box>
       </Show>
     </box>
   )
